@@ -12,7 +12,8 @@ def setup_tun(gateway=False):
     print(f"[+] Setting up TUN interface on {system}...")
 
     if system == "Darwin":
-        tun = create_tun("utun2")
+        tun = create_tun()  # macOS will assign utunX automatically
+        print(f"[+] TUN interface created: {tun.ifname}")
         # macOS: no need to run iptables or ip commands
         # If you want to add routing or firewall rules, add here as needed
 

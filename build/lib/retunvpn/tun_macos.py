@@ -1,55 +1,45 @@
-# retunvpn/tun_macos.py
-
 import socket
-import fcntl
-import os
 import struct
+import fcntl
 
-# Constants specific to macOS
-UTUN_CONTROL_NAME = b"com.apple.net.utun_control"
-UTUN_OPT_IFNAME = 2
-CTLIOCGINFO = 0xC0644E03  # ioctl request code to get control ID
+# Define macOS-specific constants (not exposed in Python's socket module by default)
+AF_SYSTEM = getattr(socket, 'AF_SYSTEM', 32)          # macOS system sockets
+SYSPROTO_CONTROL = getattr(socket, 'SYSPROTO_CONTROL', 2)  # Kernel control protocol
+CTLIOCGINFO = 0xC0644E03  # From sys/ioccom.h: _IOWR('N', 3, struct ctl_info)
 
 class UTUNTun:
     def __init__(self):
-        self.fd = socket.socket(socket.AF_SYSTEM, socket.SOCK_DGRAM, 2)
-
-        # Prepare the control info structure
-        ctl_info = struct.pack('96sI', UTUN_CONTROL_NAME, 0)
+        self.fd = socket.socket(AF_SYSTEM, socket.SOCK_DGRAM, SYSPROTO_CONTROL)
+        
+        CTL_NAME = b'com.apple.net.utun_control'
+        ctl_info = struct.pack('I96s', 0, CTL_NAME.ljust(96, b'\0'))
+        
         try:
             ctl_info = fcntl.ioctl(self.fd.fileno(), CTLIOCGINFO, ctl_info)
-        except FileNotFoundError:
-            raise RuntimeError("Unable to find utun kernel extension. Make sure the utun interface is available.")
+        except FileNotFoundError as e:
+            raise RuntimeError("utun kernel extension not available") from e
+        
+        self.ctl_id = struct.unpack('I', ctl_info[:4])[0]
+        
+        # Connect to the control
+        self.fd.connect((self.ctl_id, 0))  # 0 = auto-assign unit number
+        
+        # Corrected: Fetch interface name with proper buffer size
+        # Get 16 bytes (sufficient for interface name data)
+        opt_data = self.fd.getsockopt(SYSPROTO_CONTROL, 2, 16)
+        # Extract unit number from first 4 bytes (unsigned int)
+        unit = struct.unpack('I', opt_data[:4])[0]
+        self.ifname = f"utun{unit}"
 
-        ctl_id = struct.unpack('96sI', ctl_info)[1]
-
-        # Build sockaddr_ctl structure
-        # see: https://opensource.apple.com/source/xnu/xnu-7195.101.1/bsd/sys/kern_control.h.auto.html
-        sockaddr_ctl = struct.pack('BBHIHH',
-                                   socket.AF_SYSTEM,    # sc_len, sc_family
-                                   socket.AF_SYS_CONTROL,
-                                   0,                   # sc_sysaddr (set to 0)
-                                   ctl_id,              # sc_id
-                                   0,                   # sc_unit (0 means assign next available utun)
-                                   0)                   # padding
-
-        self.fd.connect(sockaddr_ctl)
-
-        # Get the interface name assigned (e.g., "utun3")
-        self.name = self.fd.getsockopt(socket.SYSPROTO_CONTROL, UTUN_OPT_IFNAME, 128).decode().strip('\x00')
-        print(f"[+] macOS UTUN interface created: {self.name}")
-
-    def read(self, size):
-        return self.fd.recv(size)[4:]  # Skip the 4-byte header
-
-    def write(self, data):
-        return self.fd.send(b"\x00\x00\x00\x02" + data)
 
     def fileno(self):
         return self.fd.fileno()
 
-def create_tun(ifname="utun"):
+    def close(self):
+        self.fd.close()
+
+def create_tun(name_hint=None):
     return UTUNTun()
 
-def cleanup_tun(ifname):
-    os.system(f"ifconfig {ifname} down")  # Optional on macOS
+def cleanup_tun(tun):
+    tun.close()
