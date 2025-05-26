@@ -44,32 +44,30 @@ class TunnelCore:
             return identity
 
     def _configure_tun(self):
-        # Different IPs for client/server
         if self.mode == "server":
             self.tun_ip = "10.7.0.1"
+            peer_ip = "10.7.0.2"
         else:
             self.tun_ip = "10.7.0.2"
+            peer_ip = "10.7.0.1"
 
         try:
-            # macOS requires special ifconfig syntax for utun interfaces
-            subprocess.check_call(
-                ["sudo", "ifconfig", self.tun.ifname, "inet", self.tun_ip, "10.7.0.1", "netmask", "255.255.255.0"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
+            # macOS requires this specific ifconfig format
+            subprocess.check_call([
+                "sudo", "ifconfig", self.tun.ifname,
+                "inet", self.tun_ip, peer_ip,
+                "netmask", "255.255.255.0",
+                "mtu", "1500"
+            ])
             
-            # Add route
-            subprocess.check_call(
-                ["sudo", "route", "-n", "add", "-net", "10.7.0.0/24", "-interface", self.tun.ifname],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
+            subprocess.check_call([
+                "sudo", "route", "-n", "add", "-net", "10.7.0.0/24",
+                "-interface", self.tun.ifname
+            ])
             
-            print(f"[+] TUN interface {self.tun.ifname} configured with {self.tun_ip}")
+            print(f"[+] TUN interface {self.tun.ifname} configured")
         except subprocess.CalledProcessError as e:
-            # Get error details
-            error_msg = e.stderr.decode().strip() if e.stderr else "Unknown error"
-            raise RuntimeError(f"Failed to configure TUN interface: {error_msg}") from None
+            raise RuntimeError(f"Configuration failed (are you using VPN software?)")
 
     def _setup_server(self):
         # Server listens for incoming connections
