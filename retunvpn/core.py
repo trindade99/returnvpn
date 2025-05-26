@@ -41,26 +41,42 @@ class TunnelCore:
             self.tun = create_tun()
             print(f"[+] Created TUN interface {self.tun.ifname}")
             
-            # Wait for interface to register
-            time.sleep(1)  # Increased delay
+            # Wait for interface registration
+            for _ in range(5):  # Retry for up to 5 seconds
+                if self._interface_exists():
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError("Interface never appeared in system")
             
             # Configure interface
             subprocess.check_call([
                 "sudo", "ifconfig", self.tun.ifname,
-                "inet", "10.7.0.1", "10.7.0.2",
-                "up", "mtu", "1500"
+                "up",  # Bring interface up first
+                "mtu", "1500"
             ])
             
-            # Add route
+            # Set IP addresses
             subprocess.check_call([
-                "sudo", "route", "-n", "add", "-net", "10.7.0.0/24",
-                "-interface", self.tun.ifname
+                "sudo", "ifconfig", self.tun.ifname,
+                "inet", "10.7.0.1/24"  # CIDR notation for macOS
             ])
             
+            print(f"[+] Configured {self.tun.ifname} with IP 10.7.0.1")
+
         except Exception as e:
             if self.tun:
                 self.tun.fd.close()
             raise RuntimeError(f"TUN setup failed: {str(e)}")
+
+    def _interface_exists(self):
+        try:
+            subprocess.check_call(["ifconfig", self.tun.ifname], 
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+            return True
+        except subprocess.CalledProcessError:
+            return False
 
     def _load_identity(self):
         identity_dir = "./reticulum_config/identities"
