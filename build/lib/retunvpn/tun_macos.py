@@ -16,18 +16,15 @@ class UTUNTun:
         
         try:
             ctl_info = fcntl.ioctl(self.fd.fileno(), CTLIOCGINFO, ctl_info)
-        except FileNotFoundError as e:
-            raise RuntimeError("utun kernel extension not available") from e
+        except OSError as e:
+            raise RuntimeError(f"Could not create TUN (max interfaces reached?)") from e
         
         self.ctl_id = struct.unpack('I', ctl_info[:4])[0]
+        self.fd.connect((self.ctl_id, 0))
         
-        # Connect to the control
-        self.fd.connect((self.ctl_id, 0))  # 0 = auto-assign unit number
-        
-        # Corrected: Fetch interface name with proper buffer size
-        # Get 16 bytes (sufficient for interface name data)
+        # Get valid unit number (0-255)
         opt_data = self.fd.getsockopt(SYSPROTO_CONTROL, 2, 16)
-        unit = struct.unpack('I', opt_data[:4])[0] & 0xFFFF  # Mask to valid unit number
+        unit = struct.unpack('I', opt_data[:4])[0] & 0xFF
         self.ifname = f"utun{unit}"
 
 
@@ -42,6 +39,6 @@ def create_tun():
         return UTUNTun()
     except Exception as e:
         raise RuntimeError(f"Failed to create TUN interface: {str(e)}")
-        
+
 def cleanup_tun(tun):
     tun.close()
