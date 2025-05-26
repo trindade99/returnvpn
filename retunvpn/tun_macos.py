@@ -1,9 +1,6 @@
-# tun_macos.py
 import socket
 import struct
 import fcntl
-import os
-import stat
 
 # macOS-specific constants
 AF_SYSTEM = getattr(socket, 'AF_SYSTEM', 32)
@@ -22,20 +19,10 @@ class UTUNTun:
         # Connect to the control
         self.fd.connect((self.ctl_id, 0))
         
-        # Get interface unit number (corrected buffer size)
-        opt_data = self.fd.getsockopt(SYSPROTO_CONTROL, 2, 16)  # Request 16 bytes
-        unit = struct.unpack('I', opt_data[:4])[0] & 0xFF  # Get first 4 bytes and mask
-        
+        # Get interface unit number
+        opt_data = self.fd.getsockopt(SYSPROTO_CONTROL, 2, 16)
+        unit = struct.unpack('I', opt_data[:4])[0] & 0xFF
         self.ifname = f"utun{unit}"
-        
-        # Create device node if needed (macOS specific)
-        dev_path = f"/dev/{self.ifname}"
-        if not os.path.exists(dev_path):
-            try:
-                os.mknod(dev_path, 0o666 | stat.S_IFCHR, 
-                        os.makedev(22, unit + 1))  # 22 = utun device major number
-            except PermissionError:
-                raise RuntimeError("Need sudo to create device node")
 
 def create_tun():
     try:

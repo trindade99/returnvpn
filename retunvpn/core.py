@@ -37,23 +37,18 @@ class TunnelCore:
 
     def _create_and_configure_tun(self):
         try:
-            # Create TUN interface first
+            # Create TUN interface
             self.tun = create_tun()
             print(f"[+] Created TUN interface {self.tun.ifname}")
             
-            # Configure IP addresses
-            if self.mode == "server":
-                tun_ip = "10.7.0.1"
-                peer_ip = "10.7.0.2"
-            else:
-                tun_ip = "10.7.0.2"
-                peer_ip = "10.7.0.1"
-
-            # macOS-specific configuration
+            # Wait for interface to register
+            time.sleep(1)  # Increased delay
+            
+            # Configure interface
             subprocess.check_call([
                 "sudo", "ifconfig", self.tun.ifname,
-                "inet", tun_ip, peer_ip, "alias",
-                "netmask", "255.255.255.0"
+                "inet", "10.7.0.1", "10.7.0.2",
+                "up", "mtu", "1500"
             ])
             
             # Add route
@@ -61,8 +56,6 @@ class TunnelCore:
                 "sudo", "route", "-n", "add", "-net", "10.7.0.0/24",
                 "-interface", self.tun.ifname
             ])
-            
-            print(f"[+] Configured {self.tun.ifname} with IP {tun_ip}")
             
         except Exception as e:
             if self.tun:
