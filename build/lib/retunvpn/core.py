@@ -13,9 +13,13 @@ class TunnelCore:
     def __init__(self, mode, peer_identity_path=None):
         self.mode = mode
         self.peer_identity_path = peer_identity_path
+        self.tun = None  # Will be created during startup
         
-        # Initialize Reticulum
+        # Initialize Reticulum first
         self.reticulum = RNS.Reticulum(configdir="./reticulum_config")
+        
+        # Then create and configure TUN
+        self._create_and_configure_tun()
         
         # Create TUN interface
         self.tun = create_tun()
@@ -30,6 +34,40 @@ class TunnelCore:
         self.link_established_event = threading.Event()
         
         self.running = False
+
+    def _create_and_configure_tun(self):
+        try:
+            # Create TUN interface first
+            self.tun = create_tun()
+            print(f"[+] Created TUN interface {self.tun.ifname}")
+            
+            # Configure IP addresses
+            if self.mode == "server":
+                tun_ip = "10.7.0.1"
+                peer_ip = "10.7.0.2"
+            else:
+                tun_ip = "10.7.0.2"
+                peer_ip = "10.7.0.1"
+
+            # macOS-specific configuration
+            subprocess.check_call([
+                "sudo", "ifconfig", self.tun.ifname,
+                "inet", tun_ip, peer_ip, "alias",
+                "netmask", "255.255.255.0"
+            ])
+            
+            # Add route
+            subprocess.check_call([
+                "sudo", "route", "-n", "add", "-net", "10.7.0.0/24",
+                "-interface", self.tun.ifname
+            ])
+            
+            print(f"[+] Configured {self.tun.ifname} with IP {tun_ip}")
+            
+        except Exception as e:
+            if self.tun:
+                self.tun.fd.close()
+            raise RuntimeError(f"TUN setup failed: {str(e)}")
 
     def _load_identity(self):
         identity_dir = "./reticulum_config/identities"
@@ -161,11 +199,14 @@ class TunnelCore:
 
     def stop(self, signum=None, frame=None):
         self.running = False
+        if self.tun:
+            print(f"[+] Closing TUN interface {self.tun.ifname}")
+            self.tun.fd.close()
         if self.link:
             self.link.teardown()
         self.tun.fd.close()
         print("\n[+] Tunnel stopped")
-
+        
 def configure_tun():
     tun = create_tun()
     print(f"[+] TUN interface {tun.ifname} created")
