@@ -37,37 +37,46 @@ class TunnelCore:
 
     def _create_and_configure_tun(self):
         try:
-            # Create TUN interface first
+            # Create TUN interface
             self.tun = create_tun()
             print(f"[+] Created TUN interface {self.tun.ifname}")
             
-            # Configure IP addresses
-            if self.mode == "server":
-                tun_ip = "10.7.0.1"
-                peer_ip = "10.7.0.2"
+            # Wait for interface registration
+            for _ in range(5):  # Retry for up to 5 seconds
+                if self._interface_exists():
+                    break
+                time.sleep(1)
             else:
-                tun_ip = "10.7.0.2"
-                peer_ip = "10.7.0.1"
-
-            # macOS-specific configuration
+                raise RuntimeError("Interface never appeared in system")
+            
+            # Configure interface
             subprocess.check_call([
                 "sudo", "ifconfig", self.tun.ifname,
-                "inet", tun_ip, peer_ip, "alias",
-                "netmask", "255.255.255.0"
+                "up",  # Bring interface up first
+                "mtu", "1500"
             ])
             
-            # Add route
+            # Set IP addresses
             subprocess.check_call([
-                "sudo", "route", "-n", "add", "-net", "10.7.0.0/24",
-                "-interface", self.tun.ifname
+                "sudo", "ifconfig", self.tun.ifname,
+                "inet", "10.7.0.1/24"  # CIDR notation for macOS
             ])
             
-            print(f"[+] Configured {self.tun.ifname} with IP {tun_ip}")
-            
+            print(f"[+] Configured {self.tun.ifname} with IP 10.7.0.1")
+
         except Exception as e:
             if self.tun:
                 self.tun.fd.close()
             raise RuntimeError(f"TUN setup failed: {str(e)}")
+
+    def _interface_exists(self):
+        try:
+            subprocess.check_call(["ifconfig", self.tun.ifname], 
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+            return True
+        except subprocess.CalledProcessError:
+            return False
 
     def _load_identity(self):
         identity_dir = "./reticulum_config/identities"
