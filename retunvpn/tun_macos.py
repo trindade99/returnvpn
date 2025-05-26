@@ -27,8 +27,7 @@ class UTUNTun:
         # Corrected: Fetch interface name with proper buffer size
         # Get 16 bytes (sufficient for interface name data)
         opt_data = self.fd.getsockopt(SYSPROTO_CONTROL, 2, 16)
-        # Extract unit number from first 4 bytes (unsigned int)
-        unit = struct.unpack('I', opt_data[:4])[0]
+        unit = struct.unpack('!I', opt_data[:4])[0]  # Big-endian unsigned int
         self.ifname = f"utun{unit}"
 
 
