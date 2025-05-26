@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: retunvpn
+Version: 0.1
+Requires-Dist: rns
+Requires-Dist: python-pytun; sys_platform == "linux"
+Dynamic: requires-dist
