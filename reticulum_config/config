@@ -1,0 +1,4 @@
+[reticulum]
+enable_transport = True
+shared_instance = True
+enable_shared_instance = True
