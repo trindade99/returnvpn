@@ -27,8 +27,7 @@ class UTUNTun:
         # Corrected: Fetch interface name with proper buffer size
         # Get 16 bytes (sufficient for interface name data)
         opt_data = self.fd.getsockopt(SYSPROTO_CONTROL, 2, 16)
-        # Extract unit number from first 4 bytes (unsigned int)
-        unit = struct.unpack('I', opt_data[:4])[0]
+        unit = struct.unpack('I', opt_data[:4])[0] & 0xFFFF  # Mask to valid unit number
         self.ifname = f"utun{unit}"
 
 
@@ -38,8 +37,11 @@ class UTUNTun:
     def close(self):
         self.fd.close()
 
-def create_tun(name_hint=None):
-    return UTUNTun()
-
+def create_tun():
+    try:
+        return UTUNTun()
+    except Exception as e:
+        raise RuntimeError(f"Failed to create TUN interface: {str(e)}")
+        
 def cleanup_tun(tun):
     tun.close()

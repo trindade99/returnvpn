@@ -1,32 +1,177 @@
-# --- retunvpn/core.py ---
+# core.py
+import RNS
+import os
+import struct
 import time
 import threading
-from retunvpn import tunutils, rnsutils
+import signal
+import sys
+import subprocess
+from .tun_macos import create_tun
 
-def run_tunnel(gateway=False):
-    print("[+] Starting Reticulum tunnel...")
-    tun = tunutils.create_tun("retun0")
-    destination, link = rnsutils.create_link()
+class TunnelCore:
+    def __init__(self, mode, peer_identity_path=None):
+        self.mode = mode
+        self.peer_identity_path = peer_identity_path
+        
+        # Initialize Reticulum
+        self.reticulum = RNS.Reticulum(configdir="./reticulum_config")
+        
+        # Create TUN interface
+        self.tun = create_tun()
+        self._configure_tun()
+        
+        # Load or create identity
+        self.identity = self._load_identity()
+        
+        # Initialize Reticulum components
+        self.destination = None
+        self.link = None
+        self.link_established_event = threading.Event()
+        
+        self.running = False
 
-    def read_loop():
-        while True:
-            data = tun.read(2048)
-            if data:
-                link.send(data)
+    def _load_identity(self):
+        identity_dir = "./reticulum_config/identities"
+        os.makedirs(identity_dir, exist_ok=True)
+        
+        identity_file = f"{identity_dir}/{self.mode}_identity"
+        if os.path.exists(identity_file):
+            return RNS.Identity.from_file(identity_file)
+        else:
+            identity = RNS.Identity()
+            identity.to_file(identity_file)
+            return identity
 
-    def write_loop():
-        while True:
-            if link.has_inbound():
-                data = link.read()
-                tun.write(data)
+    def _configure_tun(self):
+        # Different IPs for client/server
+        if self.mode == "server":
+            self.tun_ip = "10.7.0.1"
+        else:
+            self.tun_ip = "10.7.0.2"
 
-    threading.Thread(target=read_loop, daemon=True).start()
-    threading.Thread(target=write_loop, daemon=True).start()
+        try:
+            # macOS requires special ifconfig syntax for utun interfaces
+            subprocess.check_call(
+                ["sudo", "ifconfig", self.tun.ifname, "inet", self.tun_ip, "10.7.0.1", "netmask", "255.255.255.0"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            # Add route
+            subprocess.check_call(
+                ["sudo", "route", "-n", "add", "-net", "10.7.0.0/24", "-interface", self.tun.ifname],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            print(f"[+] TUN interface {self.tun.ifname} configured with {self.tun_ip}")
+        except subprocess.CalledProcessError as e:
+            # Get error details
+            error_msg = e.stderr.decode().strip() if e.stderr else "Unknown error"
+            raise RuntimeError(f"Failed to configure TUN interface: {error_msg}") from None
 
-    print("[+] Tunnel is running. Press Ctrl+C to stop.")
-    try:
-        while True:
+    def _setup_server(self):
+        # Server listens for incoming connections
+        self.destination = RNS.Destination(
+            self.identity,
+            RNS.Destination.IN,
+            RNS.Destination.SINGLE,
+            "returnvpn",
+            "tunnel",
+            proof_strategy=RNS.Destination.PROVE_ALL
+        )
+        
+        # Announce our presence
+        self.destination.announce()
+        print("[+] Server listening for connections...")
+
+    def _setup_client(self):
+        # Client connects to server
+        if not self.peer_identity_path:
+            raise ValueError("Client mode requires --peer argument with server identity")
+            
+        server_identity = RNS.Identity.from_file(self.peer_identity_path)
+        
+        self.destination = RNS.Destination(
+            server_identity,
+            RNS.Destination.OUT,
+            RNS.Destination.SINGLE,
+            "returnvpn",
+            "tunnel"
+        )
+        
+        print(f"[+] Connecting to server {RNS.prettyhexrep(server_identity.hash)}...")
+        self.link = RNS.Link(self.destination)
+        self.link.set_link_established_callback(self._link_established)
+
+    def _link_established(self, link):
+        print(f"\n[+] Link established with {RNS.prettyhexrep(link.destination.hash)}")
+        self.link_established_event.set()
+
+    def _tun_to_reticulum(self):
+        while self.running:
+            try:
+                packet = self.tun.fd.recv(2048)
+                if packet and self.link and self.link.established:
+                    self.link.send(packet)
+            except Exception as e:
+                if self.running:
+                    print(f"Error reading from TUN: {e}")
+                break
+
+    def _reticulum_to_tun(self):
+        while self.running:
+            try:
+                if self.link and self.link.established:
+                    data = self.link.receive()
+                    if data:
+                        self.tun.fd.send(data)
+                else:
+                    time.sleep(0.1)
+            except Exception as e:
+                if self.running:
+                    print(f"Error reading from Reticulum: {e}")
+                break
+
+    def start(self):
+        self.running = True
+        
+        if self.mode == "server":
+            self._setup_server()
+        else:
+            self._setup_client()
+            if not self.link_established_event.wait(30):
+                raise RuntimeError("Connection to server timed out")
+
+        # Start forwarding threads
+        tun_thread = threading.Thread(target=self._tun_to_reticulum)
+        ret_thread = threading.Thread(target=self._reticulum_to_tun)
+        
+        tun_thread.daemon = True
+        ret_thread.daemon = True
+        
+        tun_thread.start()
+        ret_thread.start()
+
+        print("[+] Tunnel active. Press Ctrl+C to stop.")
+        signal.signal(signal.SIGINT, self.stop)
+        signal.signal(signal.SIGTERM, self.stop)
+        
+        while self.running:
             time.sleep(1)
-    except KeyboardInterrupt:
-        print("[!] Shutting down tunnel.")
-        tunutils.cleanup_tun("retun0")
+
+    def stop(self, signum=None, frame=None):
+        self.running = False
+        if self.link:
+            self.link.teardown()
+        self.tun.fd.close()
+        print("\n[+] Tunnel stopped")
+
+def configure_tun():
+    tun = create_tun()
+    print(f"[+] TUN interface {tun.ifname} created")
+
+def run_tunnel(mode, peer_identity_path=None):
+    tunnel = TunnelCore(mode=mode, peer_identity_path=peer_identity_path)
+    tunnel.start()
