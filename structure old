@@ -1,0 +1,202 @@
+# Directory structure (visual reference only, not code)
+# retunvpn/
+# ├── retunvpn/
+# │   ├── __init__.py
+# │   ├── config.py
+# │   ├── core.py
+# │   ├── tunutils.py
+# │   └── rnsutils.py
+# ├── cli.py
+# ├── requirements.txt
+# ├── README.md
+# ├── .gitignore
+# ├── setup.py
+# └── config/
+#     └── reticulum.conf
+
+# This will be built piece by piece in this code editor.
+
+# --- cli.py ---
+import argparse
+from retunvpn import config, core
+
+def main():
+    parser = argparse.ArgumentParser(description="Reticulum VPN CLI")
+    subparsers = parser.add_subparsers(dest='command')
+
+    # Configure command
+    configure_parser = subparsers.add_parser('configure', help='Set up the TUN interface and routing')
+    configure_parser.add_argument('--gateway', action='store_true', help='Enable IP forwarding and NAT')
+
+    # Start command
+    start_parser = subparsers.add_parser('start', help='Run the VPN tunnel')
+    start_parser.add_argument('--gateway', action='store_true', help='Run as a gateway node')
+
+    args = parser.parse_args()
+
+    if args.command == 'configure':
+        config.setup_tun(gateway=args.gateway)
+    elif args.command == 'start':
+        core.run_tunnel(gateway=args.gateway)
+    else:
+        parser.print_help()
+
+if __name__ == '__main__':
+    main()
+
+
+# --- retunvpn/__init__.py ---
+# Empty file to make this directory a package
+
+
+# --- retunvpn/config.py ---
+import os
+import subprocess
+
+def setup_tun(gateway=False):
+    print("[+] Setting up TUN interface...")
+    subprocess.run(["ip", "tuntap", "add", "dev", "retun0", "mode", "tun"], check=True)
+    subprocess.run(["ip", "addr", "add", "10.10.0.1/24", "dev", "retun0"], check=True)
+    subprocess.run(["ip", "link", "set", "retun0", "up"], check=True)
+    
+    if gateway:
+        print("[+] Enabling IP forwarding and NAT...")
+        subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=True)
+        subprocess.run(["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"], check=True)
+
+
+# --- retunvpn/core.py ---
+import time
+import threading
+from retunvpn import tunutils, rnsutils
+
+def run_tunnel(gateway=False):
+    print("[+] Starting Reticulum tunnel...")
+    tun = tunutils.create_tun("retun0")
+    destination, link = rnsutils.create_link()
+
+    def read_loop():
+        while True:
+            data = tun.read(2048)
+            if data:
+                link.send(data)
+
+    def write_loop():
+        while True:
+            if link.has_inbound():
+                data = link.read()
+                tun.write(data)
+
+    threading.Thread(target=read_loop, daemon=True).start()
+    threading.Thread(target=write_loop, daemon=True).start()
+
+    print("[+] Tunnel is running. Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[!] Shutting down tunnel.")
+        tunutils.cleanup_tun("retun0")
+
+
+# --- retunvpn/tunutils.py ---
+import pytun
+import os
+
+def create_tun(ifname):
+    tun = pytun.TunTapDevice(name=ifname, flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
+    tun.addr = "10.10.0.1"
+    tun.netmask = "255.255.255.0"
+    tun.mtu = 1500
+    tun.up()
+    return tun
+
+def cleanup_tun(ifname):
+    os.system(f"ip link set {ifname} down")
+    os.system(f"ip tuntap del dev {ifname} mode tun")
+
+
+# --- retunvpn/rnsutils.py ---
+import RNS
+
+identity = RNS.Identity()
+
+def create_link():
+    destination = RNS.Destination(identity, RNS.Destination.OUT, RNS.Destination.SINGLE, "vpn")
+    link = RNS.Link(destination, None)
+    return destination, link
+
+
+# --- requirements.txt ---
+pytun
+reticulum
+
+
+# --- .gitignore ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+~/.reticulum/
+
+
+# --- README.md ---
+# RetunVPN
+
+A lightweight VPN-over-Reticulum using Python.
+
+## Features
+- VPN using Reticulum's resilient mesh
+- TUN interface for full tunnel or gateway
+- Designed for LoRa and other low-bandwidth links
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+```bash
+# One-time setup (TUN + NAT)
+sudo python3 cli.py configure --gateway
+
+# Start the VPN link
+sudo python3 cli.py start
+```
+
+## License
+
+MIT
+
+
+# --- setup.py ---
+from setuptools import setup, find_packages
+
+setup(
+    name="retunvpn",
+    version="0.1",
+    packages=find_packages(),
+    install_requires=["reticulum", "pytun"],
+    entry_points={
+        'console_scripts': [
+            'retunctl=cli:main',
+        ],
+    },
+)
+
+
+# --- config/reticulum.conf ---
+# Optional: You can copy and modify the default Reticulum configuration file here
+# This file is used to control Reticulum transport and logging options
+# Example minimal config:
+
+[reticulum]
+configdir = ~/.reticulum
+
+[logging]
+enabled = true
+loglevel = 2
+logfile = /var/log/reticulum.log
