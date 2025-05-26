@@ -47,25 +47,29 @@ class TunnelCore:
         # Different IPs for client/server
         if self.mode == "server":
             self.tun_ip = "10.7.0.1"
-            self.peer_ip = "10.7.0.2"
         else:
             self.tun_ip = "10.7.0.2"
-            self.peer_ip = "10.7.0.1"
 
         try:
+            # macOS requires special ifconfig syntax for utun interfaces
             subprocess.check_call(
-                ["sudo", "ifconfig", self.tun.ifname, self.tun_ip, self.peer_ip, "up"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                ["sudo", "ifconfig", self.tun.ifname, "inet", self.tun_ip, "10.7.0.1", "netmask", "255.255.255.0"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
             )
+            
+            # Add route
             subprocess.check_call(
                 ["sudo", "route", "-n", "add", "-net", "10.7.0.0/24", "-interface", self.tun.ifname],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
             )
+            
             print(f"[+] TUN interface {self.tun.ifname} configured with {self.tun_ip}")
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to configure TUN interface: {e}")
+            # Get error details
+            error_msg = e.stderr.decode().strip() if e.stderr else "Unknown error"
+            raise RuntimeError(f"Failed to configure TUN interface: {error_msg}") from None
 
     def _setup_server(self):
         # Server listens for incoming connections
