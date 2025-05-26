@@ -1,2 +1,2 @@
-pytun
+python-pytun
 reticulum
